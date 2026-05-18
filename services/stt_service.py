@@ -1,8 +1,6 @@
 """
 services/stt_service.py — Speech-to-Text service for JARVIS
-
-Groq Whisper API based (whisper-large-v3-turbo)
-Fixed for Render deploy + Hinglish + voice router compatibility
+FIXED VERSION (Hinglish + pronunciation + Render safe)
 """
 
 import io
@@ -15,7 +13,7 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
-# MIME TYPES (REQUIRED BY voice.py)
+# MIME TYPES (used by voice router)
 # ─────────────────────────────────────────────
 SUPPORTED_MIME_TYPES = {
     "audio/mpeg": "mp3",
@@ -52,6 +50,30 @@ GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 
 # ─────────────────────────────────────────────
+# SMART TEXT NORMALIZER (FIX pronunciation issues)
+# ─────────────────────────────────────────────
+def normalize_text(text: str) -> str:
+    """
+    Fix common STT phonetic mistakes (Hinglish → correct English words)
+    """
+    import re
+
+    corrections = {
+        "komand": "command",
+        "komputer": "computer",
+        "aplikeshan": "application",
+        "programing": "programming",
+        "jarves": "jarvis",
+        "kessidu": "what situation",
+    }
+
+    for wrong, correct in corrections.items():
+        text = re.sub(rf"\b{wrong}\b", correct, text, flags=re.IGNORECASE)
+
+    return text
+
+
+# ─────────────────────────────────────────────
 # MAIN TRANSCRIBE FUNCTION
 # ─────────────────────────────────────────────
 async def transcribe_audio(
@@ -70,9 +92,9 @@ async def transcribe_audio(
 
     if prompt is None:
         prompt = (
-            "User is speaking in Hinglish (Hindi + English mix) to Jarvis AI assistant. "
-            "Handle Indian accent and code switching naturally. "
-            "Common words: kya, hai, nahi, yaar, bhai, theek, open, close, help, system."
+            "User speaks Hinglish (Hindi + English mix). "
+            "Correct spelling of English words like command, computer, application. "
+            "Do not hallucinate random languages."
         )
 
     files = {
@@ -83,7 +105,7 @@ async def transcribe_audio(
         "model": "whisper-large-v3-turbo",
         "response_format": "verbose_json",
 
-        # 🔥 FIX: DO NOT FORCE HINDI
+        # IMPORTANT: do NOT force Hindi
         "language": "en",
 
         "prompt": prompt,
@@ -108,8 +130,11 @@ async def transcribe_audio(
     detected = result.get("language", "unknown")
     duration = result.get("duration")
 
-    # clean glitch text
-    text = text.replace("Jarvis,", "Jarvis").strip()
+    # ─────────────────────────────
+    # FIX STEP: clean output text
+    # ─────────────────────────────
+    text = text.replace("Jarvis,", "Jarvis")
+    text = normalize_text(text)
 
     return {
         "text": text,
@@ -150,7 +175,7 @@ async def transcribe_and_detect(audio_bytes: bytes, filename: str, content_type:
 
 
 # ─────────────────────────────────────────────
-# REQUIRED FOR voice.py (FIX IMPORT ERROR)
+# REQUIRED FOR voice.py (DO NOT REMOVE)
 # ─────────────────────────────────────────────
 def validate_audio_file(content_type: str, size_bytes: int) -> None:
     if not content_type:
