@@ -1,8 +1,8 @@
 """
-services/stt_service.py — Speech-to-Text service for JARVIS.
+services/stt_service.py — Speech-to-Text service for JARVIS
 
-Uses Groq Whisper API (whisper-large-v3-turbo).
-Fixed for Hinglish + Indian accent stability + production deploy.
+Groq Whisper API based (whisper-large-v3-turbo)
+Fixed for Render deploy + Hinglish + voice router compatibility
 """
 
 import io
@@ -14,6 +14,27 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────
+# MIME TYPES (REQUIRED BY voice.py)
+# ─────────────────────────────────────────────
+SUPPORTED_MIME_TYPES = {
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/mp4": "mp4",
+    "audio/x-m4a": "m4a",
+    "audio/m4a": "m4a",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/wave": "wav",
+    "audio/webm": "webm",
+    "video/webm": "webm",
+    "audio/ogg": "ogg",
+    "audio/flac": "flac",
+}
+
+# ─────────────────────────────────────────────
+# HTTP CLIENT (reuse connection)
+# ─────────────────────────────────────────────
 _CLIENT_INSTANCE: Optional[httpx.AsyncClient] = None
 
 
@@ -24,9 +45,15 @@ def get_stt_client() -> httpx.AsyncClient:
     return _CLIENT_INSTANCE
 
 
+# ─────────────────────────────────────────────
+# GROQ API
+# ─────────────────────────────────────────────
 GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 
+# ─────────────────────────────────────────────
+# MAIN TRANSCRIBE FUNCTION
+# ─────────────────────────────────────────────
 async def transcribe_audio(
     audio_bytes: bytes,
     filename: str,
@@ -44,8 +71,8 @@ async def transcribe_audio(
     if prompt is None:
         prompt = (
             "User is speaking in Hinglish (Hindi + English mix) to Jarvis AI assistant. "
-            "Handle Indian accent and code-switching naturally. "
-            "Common words: kya, hai, nahi, yaar, bhai, theek, open, close, help."
+            "Handle Indian accent and code switching naturally. "
+            "Common words: kya, hai, nahi, yaar, bhai, theek, open, close, help, system."
         )
 
     files = {
@@ -81,7 +108,7 @@ async def transcribe_audio(
     detected = result.get("language", "unknown")
     duration = result.get("duration")
 
-    # cleanup
+    # clean glitch text
     text = text.replace("Jarvis,", "Jarvis").strip()
 
     return {
@@ -92,6 +119,9 @@ async def transcribe_audio(
     }
 
 
+# ─────────────────────────────────────────────
+# DETECTION WRAPPER
+# ─────────────────────────────────────────────
 async def transcribe_and_detect(audio_bytes: bytes, filename: str, content_type: str) -> dict:
 
     result = await transcribe_audio(
@@ -104,7 +134,6 @@ async def transcribe_and_detect(audio_bytes: bytes, filename: str, content_type:
     text = result["text"]
     lang = result["language"]
 
-    # simple Hinglish detection
     if any(w in text.lower() for w in ["kya", "hai", "yaar", "bhai", "nahi", "theek"]):
         final_lang = "hinglish"
     elif lang == "hi":
@@ -120,12 +149,10 @@ async def transcribe_and_detect(audio_bytes: bytes, filename: str, content_type:
     }
 
 
-# ✅ REQUIRED FIX FOR IMPORT ERROR
+# ─────────────────────────────────────────────
+# REQUIRED FOR voice.py (FIX IMPORT ERROR)
+# ─────────────────────────────────────────────
 def validate_audio_file(content_type: str, size_bytes: int) -> None:
-    """
-    Keeps router compatibility.
-    """
-
     if not content_type:
         raise ValueError("Missing content type")
 
