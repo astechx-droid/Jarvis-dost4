@@ -1,63 +1,28 @@
 """
 services/stt_service.py — Speech-to-Text service for JARVIS.
 
-Uses Groq's Whisper API (whisper-large-v3-turbo) for ultra-fast transcription.
-Supports Hindi, English, Hinglish, and auto-language detection.
-
-Why Groq Whisper:
-  - No local model download (runs on Groq's infrastructure)
-  - Extremely fast (~300x real-time speed)
-  - Supports 99 languages including Hindi
-  - Uses the same API key already configured
+Uses Groq Whisper API (whisper-large-v3-turbo).
+Fixed for Hinglish + Indian accent stability.
 """
 
 import io
 import logging
-import tempfile
-from typing import Optional, List, Dict
 import httpx
+from typing import Optional
+
 from config import settings
 
 logger = logging.getLogger(__name__)
 
-# ── Global HTTP Client for Connection Pooling (Faster Response) ───────────────
-# We reuse the client to avoid the overhead of opening a new TCP/SSL connection 
-# for every voice request, saving ~200-500ms per call.
 _CLIENT_INSTANCE: Optional[httpx.AsyncClient] = None
 
 def get_stt_client() -> httpx.AsyncClient:
     global _CLIENT_INSTANCE
     if _CLIENT_INSTANCE is None:
-        import ssl
-        ssl_ctx = ssl.create_default_context()
-        _CLIENT_INSTANCE = httpx.AsyncClient(verify=ssl_ctx, timeout=60.0)
+        _CLIENT_INSTANCE = httpx.AsyncClient(timeout=60.0)
     return _CLIENT_INSTANCE
 
-# ── Supported audio MIME types → file extensions ──────────────────────────────
-SUPPORTED_MIME_TYPES = {
-    "audio/mpeg":       "mp3",
-    "audio/mp3":        "mp3",
-    "audio/mp4":        "mp4",
-    "audio/x-m4a":     "m4a",
-    "audio/m4a":        "m4a",
-    "audio/wav":        "wav",
-    "audio/x-wav":      "wav",
-    "audio/wave":       "wav",
-    "audio/webm":       "webm",
-    "video/webm":       "webm",   # browser MediaRecorder often sends this
-    "audio/ogg":        "ogg",
-    "audio/flac":       "flac",
-}
 
-# Languages JARVIS supports for forced transcription
-LANGUAGE_CODES = {
-    "hindi":    "hi",
-    "english":  "en",
-    "hinglish": None,   # None = auto-detect (Whisper handles mixed-language well)
-    "auto":     None,
-}
-
-# ── Groq Whisper API endpoint ─────────────────────────────────────────────────
 GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 
@@ -68,203 +33,90 @@ async def transcribe_audio(
     language: Optional[str] = None,
     prompt: Optional[str] = None,
 ) -> dict:
-    """
-    Transcribe audio using Groq Whisper API.
 
-    Args:
-        audio_bytes:  Raw audio file bytes.
-        filename:     Original filename (used to hint format).
-        content_type: MIME type of the audio (e.g. 'audio/webm').
-        language:     Optional ISO-639-1 language code ('en', 'hi').
-                      Pass None to auto-detect.
-        prompt:       Optional context prompt to guide transcription
-                      (e.g. "Mr Aryan is speaking in Hinglish").
-
-    Returns:
-        dict with keys:
-          - text:      The transcribed text
-          - language:  Detected/forced language code
-          - duration:  Audio duration in seconds (if available)
-          - segments:  Detailed word segments (if verbose)
-    """
     if not audio_bytes:
-        raise ValueError("Empty audio data received.")
+        raise ValueError("Empty audio data")
 
-    if len(audio_bytes) > 25 * 1024 * 1024:  # 25 MB Groq limit
-        raise ValueError("Audio file too large. Maximum size is 25 MB.")
+    if len(audio_bytes) > 25 * 1024 * 1024:
+        raise ValueError("Audio too large (max 25MB)")
 
-    # Determine file extension from MIME type or filename
-    ext = _get_extension(content_type, filename)
-
-    # ELITE HINGLISH PROMPT: Phonetically weights the engine for Indian accents.
-    # Includes common fillers and bi-lingual transitions.
     if prompt is None:
         prompt = (
-            "Jarvis, listening. Sir is speaking in Hinglish (mixed Hindi-English) with an Indian accent. "
-            "Keywords: arre, yaar, bhai, theek hai, matlab, basically, actually, suno, batao, help, system. "
-            "Handle code-switching naturally. Do not hallucinate random languages or patterns."
+            "User is speaking in Hinglish (Hindi + English mix) to an AI assistant named Jarvis. "
+            "Handle Indian accent, code switching, and casual words like yaar, bhai, kya, hai, theek."
         )
 
-    logger.info(
-        "Transcription request | size=%d bytes | ext=%s | lang=%s",
-        len(audio_bytes), ext, language or "auto"
+    files = {
+        "file": (f"audio.wav", io.BytesIO(audio_bytes), content_type or "audio/webm"),
+    }
+
+    # ✅ FIXED STABLE CONFIG FOR HINGLISH
+    data = {
+        "model": "whisper-large-v3-turbo",
+        "response_format": "verbose_json",
+
+        # 🔥 IMPORTANT FIX: DO NOT FORCE HINDI
+        "language": "en",
+
+        # 🧠 Better Hinglish understanding
+        "prompt": prompt,
+
+        # 🎯 Prevent gibberish output
+        "temperature": 0.0,
+    }
+
+    client = get_stt_client()
+
+    response = await client.post(
+        GROQ_AUDIO_URL,
+        headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+        files=files,
+        data=data,
     )
 
-    # Build multipart form data for Groq API
-    files = {
-        "file": (f"audio.{ext}", io.BytesIO(audio_bytes), content_type or "audio/webm"),
-    }
-    data = {
-        "model":             "whisper-large-v3-turbo",   # fastest high-quality Whisper
-        "response_format":   "verbose_json",              # get language + duration info
-        "prompt":            prompt,
-        "language":          "hi",                        # FORCED TO HINDI FOR PERFECT HINGLISH
-        "temperature":       0.0,                         # ELIMINATE GIBBERISH/HALLUCINATIONS
-    }
-
-    # Call Groq Whisper API (using global pooled client)
-    client = get_stt_client()
-    try:
-        response = await client.post(
-            GROQ_AUDIO_URL,
-            headers={"Authorization": f"Bearer {settings.groq_api_key}"},
-            files=files,
-            data=data,
-        )
-    except Exception as e:
-        logger.error("STT network error: %s", e)
-        raise ValueError(f"Failed to reach Groq API: {e}")
-
     if response.status_code != 200:
-        error_body = response.text
-        logger.error("Groq Whisper API error | status=%d | body=%s", response.status_code, error_body)
-        raise ValueError(f"Transcription failed (HTTP {response.status_code}): {error_body}")
+        raise ValueError(f"STT failed: {response.text}")
 
     result = response.json()
 
-    text      = result.get("text", "").strip()
-    detected  = result.get("language", language or "unknown")
-    duration  = result.get("duration", None)
-    segments  = result.get("segments", [])
+    text = result.get("text", "").strip()
+    detected = result.get("language", "unknown")
+    duration = result.get("duration")
 
-    logger.info(
-        "Transcription complete | lang=%s | duration=%.1fs | text_len=%d",
-        detected, duration or 0, len(text)
-    )
+    # 🔧 CLEAN OUTPUT (removes weird glitches)
+    text = text.replace("Jarvis,", "Jarvis").strip()
 
     return {
-        "text":     text,
+        "text": text,
         "language": detected,
         "duration": duration,
-        "segments": segments,
+        "segments": result.get("segments", []),
     }
 
 
-async def transcribe_and_detect(
-    audio_bytes: bytes,
-    filename: str,
-    content_type: str,
-) -> dict:
-    """
-    Transcribe audio with automatic language detection.
-    Adds JARVIS-specific language classification on top of Whisper's detection.
+async def transcribe_and_detect(audio_bytes: bytes, filename: str, content_type: str) -> dict:
 
-    Returns:
-        dict with keys: text, language, language_code, duration
-    """
     result = await transcribe_audio(
         audio_bytes=audio_bytes,
         filename=filename,
         content_type=content_type,
-        language=None,  # auto-detect
+        language=None,
     )
 
     text = result["text"]
-    detected_code = result["language"]
+    lang = result["language"]
 
-    # Map Whisper's language code to JARVIS language label
-    jarvis_lang = _map_language(detected_code, text)
+    # Simple classification
+    if any(word in text.lower() for word in ["kya", "hai", "yaar", "bhai", "nahi"]):
+        final_lang = "hinglish"
+    elif lang == "hi":
+        final_lang = "hindi"
+    else:
+        final_lang = "english"
 
     return {
-        "text":          text,
-        "language":      jarvis_lang,
-        "language_code": detected_code,
-        "duration":      result["duration"],
+        "text": text,
+        "language": final_lang,
+        "language_code": lang,
+        "duration": result["duration"],
     }
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _get_extension(content_type: str, filename: str) -> str:
-    """Determine audio file extension from MIME type or filename."""
-    # Try MIME type first
-    ext = SUPPORTED_MIME_TYPES.get(content_type.lower().split(";")[0].strip())
-    if ext:
-        return ext
-
-    # Fall back to filename extension
-    if filename and "." in filename:
-        return filename.rsplit(".", 1)[-1].lower()
-
-    # Default to webm (common from browser MediaRecorder)
-    return "webm"
-
-
-def _map_language(whisper_code: str, text: str) -> str:
-    """
-    Map Whisper's ISO-639-1 code to JARVIS language label.
-    Also detects Hinglish (Hindi words in Latin script).
-    """
-    if not whisper_code:
-        return "hinglish"
-
-    code = whisper_code.lower()
-
-    if code == "hi":
-        # Check if it's actually Hinglish (Latin script in primarily Hindi output)
-        import re
-        latin_chars = len(re.findall(r'[a-zA-Z]', text))
-        total_chars = max(len(text), 1)
-        if latin_chars / total_chars > 0.3:
-            return "hinglish"
-        return "hindi"
-    elif code == "en":
-        # Check for Hinglish markers in English-detected text
-        hinglish_markers = {
-            "kya", "hai", "hain", "aap", "main", "nahi", "bhi", "aur",
-            "toh", "agar", "lekin", "bahut", "bohot", "yaar", "bhai",
-            "accha", "theek", "matlab", "samajh", "bilkul", "zaroor",
-        }
-        words = set(text.lower().split())
-        if words & hinglish_markers:
-            return "hinglish"
-        return "english"
-    else:
-        # Fallback for noise-induced "foreign" detection (e.g. Welsh, Afrikaans)
-        # If the text has latin letters, we suspect Hinglish/English.
-        import re
-        if re.search(r'[a-zA-Z]', text):
-            return "hinglish"
-        return "hindi"  # Default to Hindi for Devanagari or pure noise
-
-
-def validate_audio_file(content_type: str, size_bytes: int) -> None:
-    """
-    Validate audio file before processing.
-    Raises ValueError with a descriptive message if invalid.
-    """
-    # Check MIME type
-    normalized = content_type.lower().split(";")[0].strip()
-    if normalized not in SUPPORTED_MIME_TYPES and not normalized.startswith("audio/"):
-        raise ValueError(
-            f"Unsupported file type: '{content_type}'. "
-            f"Supported formats: mp3, wav, webm, m4a, ogg, flac, mp4."
-        )
-
-    # Check size (25 MB Groq limit)
-    if size_bytes > 25 * 1024 * 1024:
-        raise ValueError("Audio file too large. Maximum size is 25 MB.")
-
-    # Warn about very small files
-    if size_bytes < 100:
-        raise ValueError("Audio file is too small. Please provide a valid recording.")
