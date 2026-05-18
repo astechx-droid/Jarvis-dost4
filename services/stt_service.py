@@ -2,19 +2,20 @@
 services/stt_service.py — Speech-to-Text service for JARVIS.
 
 Uses Groq Whisper API (whisper-large-v3-turbo).
-Fixed for Hinglish + Indian accent stability.
+Fixed for Hinglish + Indian accent stability + production deploy.
 """
 
 import io
 import logging
-import httpx
 from typing import Optional
+import httpx
 
 from config import settings
 
 logger = logging.getLogger(__name__)
 
 _CLIENT_INSTANCE: Optional[httpx.AsyncClient] = None
+
 
 def get_stt_client() -> httpx.AsyncClient:
     global _CLIENT_INSTANCE
@@ -42,26 +43,23 @@ async def transcribe_audio(
 
     if prompt is None:
         prompt = (
-            "User is speaking in Hinglish (Hindi + English mix) to an AI assistant named Jarvis. "
-            "Handle Indian accent, code switching, and casual words like yaar, bhai, kya, hai, theek."
+            "User is speaking in Hinglish (Hindi + English mix) to Jarvis AI assistant. "
+            "Handle Indian accent and code-switching naturally. "
+            "Common words: kya, hai, nahi, yaar, bhai, theek, open, close, help."
         )
 
     files = {
         "file": (f"audio.wav", io.BytesIO(audio_bytes), content_type or "audio/webm"),
     }
 
-    # ✅ FIXED STABLE CONFIG FOR HINGLISH
     data = {
         "model": "whisper-large-v3-turbo",
         "response_format": "verbose_json",
 
-        # 🔥 IMPORTANT FIX: DO NOT FORCE HINDI
+        # 🔥 FIX: DO NOT FORCE HINDI
         "language": "en",
 
-        # 🧠 Better Hinglish understanding
         "prompt": prompt,
-
-        # 🎯 Prevent gibberish output
         "temperature": 0.0,
     }
 
@@ -83,7 +81,7 @@ async def transcribe_audio(
     detected = result.get("language", "unknown")
     duration = result.get("duration")
 
-    # 🔧 CLEAN OUTPUT (removes weird glitches)
+    # cleanup
     text = text.replace("Jarvis,", "Jarvis").strip()
 
     return {
@@ -106,8 +104,8 @@ async def transcribe_and_detect(audio_bytes: bytes, filename: str, content_type:
     text = result["text"]
     lang = result["language"]
 
-    # Simple classification
-    if any(word in text.lower() for word in ["kya", "hai", "yaar", "bhai", "nahi"]):
+    # simple Hinglish detection
+    if any(w in text.lower() for w in ["kya", "hai", "yaar", "bhai", "nahi", "theek"]):
         final_lang = "hinglish"
     elif lang == "hi":
         final_lang = "hindi"
@@ -120,3 +118,19 @@ async def transcribe_and_detect(audio_bytes: bytes, filename: str, content_type:
         "language_code": lang,
         "duration": result["duration"],
     }
+
+
+# ✅ REQUIRED FIX FOR IMPORT ERROR
+def validate_audio_file(content_type: str, size_bytes: int) -> None:
+    """
+    Keeps router compatibility.
+    """
+
+    if not content_type:
+        raise ValueError("Missing content type")
+
+    if size_bytes > 25 * 1024 * 1024:
+        raise ValueError("Audio too large (max 25MB)")
+
+    if size_bytes < 100:
+        raise ValueError("Invalid audio file")
