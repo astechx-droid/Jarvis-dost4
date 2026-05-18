@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+build/
+dist/
+
+# JARVIS Memory
+*.db
+*.db-journal
+*.wav
+*.mp3
+
+# IDE / OS
+.vscode/
+.idea/
+.replit
+.DS_Store
+Thumbs.db

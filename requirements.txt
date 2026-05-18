@@ -1,0 +1,23 @@
+# ── Core Brain (Render/Cloud Compatible) ───────────────────
+fastapi
+uvicorn
+gunicorn
+groq
+httpx
+sqlalchemy
+aiosqlite
+edge-tts
+pydantic
+pydantic-settings
+python-multipart
+python-dotenv
+
+# ── Local Hardware Client (Only for PC/Mobile run) ──────────
+# These will be ignored by Render but needed for the local client
+# pyautogui
+# psutil
+# pycaw
+# pyaudio
+# numpy
+# openwakeword
+# pydub
