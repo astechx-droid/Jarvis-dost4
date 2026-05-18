@@ -11,7 +11,9 @@ pydantic
 pydantic-settings
 python-multipart
 python-dotenv
-
+duckduckgo-search
+pydub
+requests
 # ── Local Hardware Client (Only for PC/Mobile run) ──────────
 # These will be ignored by Render but needed for the local client
 # pyautogui
@@ -19,5 +21,3 @@ python-dotenv
 # pycaw
 # pyaudio
 # numpy
-# openwakeword
-# pydub
