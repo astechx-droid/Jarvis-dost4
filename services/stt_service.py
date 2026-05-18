@@ -91,10 +91,12 @@ async def transcribe_audio(
         raise ValueError("Audio too large (max 25MB)")
 
     if prompt is None:
-        prompt = (
-            "User speaks Hinglish (Hindi + English mix). "
-            "Correct spelling of English words like command, computer, application. "
-            "Do not hallucinate random languages."
+            prompt = (
+    "User is speaking Hinglish (Hindi + English mix). "
+    "Transcribe exactly what is spoken. "
+    "Do NOT convert Hindi words into English. "
+    "Do NOT translate. Keep natural Hinglish structure."
+)
         )
 
     files = {
