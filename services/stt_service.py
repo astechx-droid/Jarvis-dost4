@@ -21,8 +21,10 @@ _CLIENT_INSTANCE: Optional[httpx.AsyncClient] = None
 
 def get_stt_client() -> httpx.AsyncClient:
     global _CLIENT_INSTANCE
+
     if _CLIENT_INSTANCE is None:
         _CLIENT_INSTANCE = httpx.AsyncClient(timeout=60.0)
+
     return _CLIENT_INSTANCE
 
 
@@ -31,6 +33,7 @@ GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 def normalize_text(text: str) -> str:
     import re
+
     fixes = {
         "komand": "command",
         "komputer": "computer",
@@ -38,7 +41,12 @@ def normalize_text(text: str) -> str:
     }
 
     for wrong, correct in fixes.items():
-        text = re.sub(rf"\b{wrong}\b", correct, text, flags=re.IGNORECASE)
+        text = re.sub(
+            rf"\b{wrong}\b",
+            correct,
+            text,
+            flags=re.IGNORECASE
+        )
 
     return text
 
@@ -58,25 +66,37 @@ async def transcribe_audio(
         raise ValueError("Audio too large")
 
     if prompt is None:
-        prompt = "User speaks Hinglish. Do not translate. Only transcribe."
+        prompt = (
+            "User speaks Hinglish. "
+            "Do not translate. "
+            "Only transcribe."
+        )
 
     files = {
-        "file": (filename or "audio.wav", io.BytesIO(audio_bytes), content_type or "audio/webm"),
+        "file": (
+            filename or "audio.wav",
+            io.BytesIO(audio_bytes),
+            content_type or "audio/webm",
+        ),
     }
 
     data = {
         "model": "whisper-large-v3-turbo",
         "response_format": "verbose_json",
-        "language": None,   # 🔥 IMPORTANT FIX (NO FORCE ENGLISH)
         "prompt": prompt,
         "temperature": 0.0,
     }
+
+    if language:
+        data["language"] = language
 
     client = get_stt_client()
 
     response = await client.post(
         GROQ_AUDIO_URL,
-        headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+        headers={
+            "Authorization": f"Bearer {settings.groq_api_key}"
+        },
         files=files,
         data=data,
     )
@@ -97,7 +117,29 @@ async def transcribe_audio(
     }
 
 
-def validate_audio_file(content_type: str, size_bytes: int) -> None:
+async def transcribe_and_detect(
+    audio_bytes: bytes,
+    filename: str,
+    content_type: str,
+):
+    """
+    Compatibility wrapper for pipeline_service.py
+    """
+
+    result = await transcribe_audio(
+        audio_bytes=audio_bytes,
+        filename=filename,
+        content_type=content_type,
+    )
+
+    return result
+
+
+def validate_audio_file(
+    content_type: str,
+    size_bytes: int,
+) -> None:
+
     if not content_type:
         raise ValueError("Missing content type")
 
