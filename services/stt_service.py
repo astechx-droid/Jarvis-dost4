@@ -1,6 +1,7 @@
 import io
 import logging
 from typing import Optional
+
 import httpx
 from config import settings
 
@@ -18,6 +19,8 @@ SUPPORTED_MIME_TYPES = {
 
 _CLIENT_INSTANCE: Optional[httpx.AsyncClient] = None
 
+GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+
 
 def get_stt_client() -> httpx.AsyncClient:
     global _CLIENT_INSTANCE
@@ -28,16 +31,15 @@ def get_stt_client() -> httpx.AsyncClient:
     return _CLIENT_INSTANCE
 
 
-GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-
-
 def normalize_text(text: str) -> str:
     import re
 
     fixes = {
-        "komand": "command",
-        "komputer": "computer",
-        "aplikeshan": "application",
+        "jarviss": "jarvis",
+        "jarvez": "jarvis",
+        "jarwis": "jarvis",
+        "he jarvis": "hey jarvis",
+        "hej jarvis": "hey jarvis",
     }
 
     for wrong, correct in fixes.items():
@@ -45,50 +47,68 @@ def normalize_text(text: str) -> str:
             rf"\b{wrong}\b",
             correct,
             text,
-            flags=re.IGNORECASE
+            flags=re.IGNORECASE,
         )
 
-    return text
+    return text.strip()
+
+
+def detect_language_from_text(text: str) -> tuple[str, str]:
+    """
+    Manual Hinglish detector.
+    Prevents Whisper from returning nonsense like Icelandic.
+    """
+
+    text_lower = text.lower()
+
+    hindi_words = [
+        "kya", "kaise", "mera", "tum", "aap",
+        "jarvis", "bhai", "hello", "hey",
+        "namaste", "haan", "nahi", "kr", "kar"
+    ]
+
+    matches = sum(word in text_lower for word in hindi_words)
+
+    if matches >= 2:
+        return "hinglish", "hi"
+
+    return "english", "en"
 
 
 async def transcribe_audio(
     audio_bytes: bytes,
     filename: str,
     content_type: str,
-    language: Optional[str] = None,
-    prompt: Optional[str] = None,
-) -> dict:
-
+):
     if not audio_bytes:
-        raise ValueError("Empty audio data")
+        raise ValueError("Empty audio")
 
     if len(audio_bytes) > 25 * 1024 * 1024:
         raise ValueError("Audio too large")
 
-    if prompt is None:
-        prompt = (
-            "User speaks Hinglish. "
-            "Do not translate. "
-            "Only transcribe."
-        )
-
     files = {
         "file": (
-            filename or "audio.wav",
+            filename or "audio.webm",
             io.BytesIO(audio_bytes),
             content_type or "audio/webm",
-        ),
+        )
     }
 
     data = {
         "model": "whisper-large-v3-turbo",
+
+        # IMPORTANT
+        "language": "en",
+
+        "prompt": (
+            "The speaker talks in Hinglish and English. "
+            "Words like hey jarvis, bhai, kya, kaise "
+            "must stay exactly as spoken."
+        ),
+
         "response_format": "verbose_json",
-        "prompt": prompt,
         "temperature": 0.0,
     }
-
-    if language:
-        data["language"] = language
 
     client = get_stt_client()
 
@@ -107,11 +127,15 @@ async def transcribe_audio(
     result = response.json()
 
     text = result.get("text", "").strip()
+
     text = normalize_text(text)
+
+    detected_language, language_code = detect_language_from_text(text)
 
     return {
         "text": text,
-        "language": result.get("language", "unknown"),
+        "language": detected_language,
+        "language_code": language_code,
         "duration": result.get("duration"),
         "segments": result.get("segments", []),
     }
@@ -123,28 +147,30 @@ async def transcribe_and_detect(
     content_type: str,
 ):
     """
-    Compatibility wrapper for pipeline_service.py
+    Compatibility wrapper for old imports.
     """
 
-    result = await transcribe_audio(
+    return await transcribe_audio(
         audio_bytes=audio_bytes,
         filename=filename,
         content_type=content_type,
     )
 
-    return result
-
 
 def validate_audio_file(
     content_type: str,
     size_bytes: int,
-) -> None:
-
+):
     if not content_type:
         raise ValueError("Missing content type")
 
     if size_bytes > 25 * 1024 * 1024:
-        raise ValueError("Too large")
+        raise ValueError("Audio too large")
 
     if size_bytes < 100:
         raise ValueError("Invalid audio")
+
+    if content_type not in SUPPORTED_MIME_TYPES:
+        raise ValueError(
+            f"Unsupported audio format: {content_type}"
+        )
