@@ -1,15 +1,6 @@
 """
-services/groq_service.py — Groq API integration for JARVIS.
-
-Handles:
-  - Standard (non-streaming) chat completions
-  - Streaming completions (for future WebSocket support)
-  - Error handling and retries
-"""
-
-"""
 services/groq_service.py
-Optimized Groq AI integration for JARVIS
+Ultra optimized Groq AI service for JARVIS
 """
 
 import ssl
@@ -27,6 +18,7 @@ from groq import (
 
 from config import settings
 from core.context import trim_history_for_context
+from core.model_router import choose_model
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +26,10 @@ logger = logging.getLogger(__name__)
 # MODEL CONFIG
 # ─────────────────────────────────────────────────────────────
 
-# SMART MODEL
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+FAST_MODEL = "llama-3.3-70b-versatile"
 
-# FAST FALLBACK
+DEEP_MODEL = "deepseek-r1-distill-llama-70b"
+
 FALLBACK_MODEL = "llama-3.1-8b-instant"
 
 # ─────────────────────────────────────────────────────────────
@@ -51,14 +43,14 @@ _client = None
 
 def _make_http_client() -> httpx.AsyncClient:
     """
-    Create stable HTTP client with proper SSL handling.
+    Stable async HTTP client with SSL support.
     """
 
     ssl_ctx = ssl.create_default_context()
 
     return httpx.AsyncClient(
         verify=ssl_ctx,
-        timeout=60.0,
+        timeout=90.0,
     )
 
 
@@ -84,21 +76,48 @@ def get_groq_client() -> AsyncGroq:
 
 
 # ─────────────────────────────────────────────────────────────
+# MODEL SELECTION
+# ─────────────────────────────────────────────────────────────
+
+def get_model(messages: List[Dict]) -> str:
+    """
+    Dynamically choose best model.
+    """
+
+    try:
+
+        user_message = messages[-1]["content"]
+
+        selected = choose_model(user_message)
+
+        logger.info(
+            "Model router selected: %s",
+            selected,
+        )
+
+        return selected
+
+    except Exception:
+
+        return FAST_MODEL
+
+
+# ─────────────────────────────────────────────────────────────
 # STANDARD CHAT COMPLETION
 # ─────────────────────────────────────────────────────────────
 
 async def chat_completion(
     messages: List[Dict],
-    model: str = DEFAULT_MODEL,
 ) -> str:
     """
-    Generate a standard AI response.
+    Generate AI response.
     """
 
     client = get_groq_client()
 
-    # Prevent oversized contexts
     messages = trim_history_for_context(messages)
+
+    model = get_model(messages)
 
     try:
 
@@ -115,7 +134,7 @@ async def chat_completion(
 
             stream=False,
 
-            timeout=20.0,
+            timeout=25.0,
         )
 
         reply = (
@@ -125,7 +144,7 @@ async def chat_completion(
         )
 
         logger.info(
-            "Groq response received | model=%s | tokens_used=%s",
+            "Groq response | model=%s | tokens=%s",
             model,
             response.usage.total_tokens
             if response.usage
@@ -141,30 +160,43 @@ async def chat_completion(
     except RateLimitError:
 
         logger.warning(
-            "Groq rate limit hit on %s",
+            "Rate limit hit on %s",
             model,
         )
 
-        # fallback attempt
-        if model != FALLBACK_MODEL:
+        try:
 
-            try:
+            logger.info(
+                "Trying fallback model..."
+            )
 
-                logger.info(
-                    "Trying fallback model..."
-                )
+            response = await client.chat.completions.create(
+                model=FALLBACK_MODEL,
 
-                return await chat_completion(
-                    messages=messages,
-                    model=FALLBACK_MODEL,
-                )
+                messages=messages,
 
-            except Exception:
-                pass
+                temperature=0.7,
 
-        raise ValueError(
-            "Jarvis is busy right now. Please try again in a moment."
-        )
+                max_tokens=512,
+
+                top_p=0.95,
+
+                stream=False,
+            )
+
+            reply = (
+                response.choices[0]
+                .message
+                .content
+            )
+
+            return (reply or "").strip()
+
+        except Exception:
+
+            raise ValueError(
+                "Jarvis is currently overloaded. Please try again shortly."
+            )
 
     # ─────────────────────────────────────────────────────────
     # NETWORK ERROR
@@ -173,15 +205,15 @@ async def chat_completion(
     except APIConnectionError:
 
         logger.error(
-            "Groq connection failed"
+            "Groq connection error"
         )
 
         raise ValueError(
-            "Could not connect to AI servers."
+            "Unable to connect to AI servers."
         )
 
     # ─────────────────────────────────────────────────────────
-    # GENERIC API ERROR
+    # API ERROR
     # ─────────────────────────────────────────────────────────
 
     except APIError as e:
@@ -191,31 +223,44 @@ async def chat_completion(
             e,
         )
 
-        # fallback if smart model fails
-        if model != FALLBACK_MODEL:
+        try:
 
-            try:
+            logger.warning(
+                "Primary model failed. Using fallback."
+            )
 
-                logger.warning(
-                    "Primary model failed. Using fallback."
-                )
+            response = await client.chat.completions.create(
+                model=FALLBACK_MODEL,
 
-                return await chat_completion(
-                    messages=messages,
-                    model=FALLBACK_MODEL,
-                )
+                messages=messages,
 
-            except Exception:
-                pass
+                temperature=0.7,
 
-        raise ValueError(
-            f"Groq API error: {e.message}"
-        )
+                max_tokens=512,
+
+                top_p=0.95,
+
+                stream=False,
+            )
+
+            reply = (
+                response.choices[0]
+                .message
+                .content
+            )
+
+            return (reply or "").strip()
+
+        except Exception:
+
+            raise ValueError(
+                f"Groq API error: {e.message}"
+            )
 
     except Exception as e:
 
         logger.exception(
-            "Unexpected Groq error"
+            "Unexpected AI error"
         )
 
         raise ValueError(
@@ -229,7 +274,6 @@ async def chat_completion(
 
 async def chat_completion_stream(
     messages: List[Dict],
-    model: str = DEFAULT_MODEL,
 ) -> AsyncGenerator[str, None]:
     """
     Stream AI response token-by-token.
@@ -237,9 +281,9 @@ async def chat_completion_stream(
 
     client = get_groq_client()
 
-    messages = trim_history_for_context(
-        messages
-    )
+    messages = trim_history_for_context(messages)
+
+    model = get_model(messages)
 
     try:
 
@@ -276,14 +320,13 @@ async def chat_completion_stream(
     except RateLimitError:
 
         yield (
-            "[Jarvis is currently busy. "
-            "Please try again shortly.]"
+            "[Jarvis is busy right now. Please try again shortly.]"
         )
 
     except APIConnectionError:
 
         yield (
-            "[Connection problem detected.]"
+            "[Connection issue detected.]"
         )
 
     except APIError as e:
@@ -295,7 +338,7 @@ async def chat_completion_stream(
     except Exception as e:
 
         logger.exception(
-            "Streaming failed"
+            "Streaming failure"
         )
 
         yield (
